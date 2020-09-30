@@ -1,0 +1,15 @@
+name: easy-rider-heroku
+channels:
+- conda-forge
+dependencies:
+- python=3.8.3
+- conda
+- pandas
+- matplotlib
+- numpy
+- scikit-learn
+- pydeck
+- seaborn
+- pip
+- pip:
+  - streamlit

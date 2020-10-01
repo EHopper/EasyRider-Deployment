@@ -15,7 +15,7 @@ from util import trip_data
 def load_data():
     data = pd.read_csv(config.PROCESSED_DATA_PATH + 'trips.csv', index_col=0)
 
-    rts_gridpts = pd.from_pickle(config.PROCESSED_DATA_PATH + 'rts_grid_pts.pkl')
+    rts_gridpts = pd.read_pickle(config.PROCESSED_DATA_PATH + 'rts_grid_pts.pkl')
 
     grid_pts_fine = pd.read_csv(config.MODEL_PATH + 'road_backbone_merged.csv', index_col=0)
 

@@ -14,10 +14,8 @@ from util import trip_data
 @st.cache
 def load_data():
     data = pd.read_csv(config.PROCESSED_DATA_PATH + 'trips.csv', index_col=0)
-    # df = filter_cleaned_trips(df)
 
-    rts_gridpts = pd.read_csv(config.PROCESSED_DATA_PATH + 'rts_grid_pts.csv', index_col=0)
-    rts_gridpts.grid_pts = rts_gridpts.grid_pts.apply(lambda x: [int(a) for a in x.strip('[]').split(',')])
+    rts_gridpts = pd.from_pickle(config.PROCESSED_DATA_PATH + 'rts_grid_pts.pkl')
 
     grid_pts_fine = pd.read_csv(config.MODEL_PATH + 'road_backbone_merged.csv', index_col=0)
 

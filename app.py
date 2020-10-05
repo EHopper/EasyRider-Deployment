@@ -11,64 +11,63 @@ from util import config
 from util import mapping
 from util import trip_data
 
-@st.cache
+@st.cache(suppress_st_warning=True)
 def load_data():
-    data = pd.read_csv(config.PROCESSED_DATA_PATH + 'trips.csv', index_col=0)
+    st.write('Loading data!')
+    trips = pd.read_feather(config.PROCESSED_DATA_PATH + 'trips_scaled.feather')
+    trips.set_index('rte_id', inplace=True)
 
-    rts_gridpts = pd.read_feather(config.PROCESSED_DATA_PATH + 'rts_grid_pts.feather')
-    rts_gridpts = rts_gridpts.set_index('rte_id')
+    gridpts_at_rte_500 = pd.read_feather(config.PROCESSED_DATA_PATH + 'gridpts_at_rte_500.feather')
+    gridpts_at_rte_500.set_index('rte_id', inplace=True)
 
-    grid_pts_fine = pd.read_csv(config.MODEL_PATH + 'road_backbone_merged.csv', index_col=0)
+    grid_pts_500 = pd.read_feather(config.MODEL_PATH + 'grid_points_500.feather')
+    grid_pts_500.set_index('grid_id', inplace=True)
 
-    return data, grid_pts_fine, rts_gridpts
+    feature_sc = pd.read_feather(config.MODEL_PATH + 'feature_importance.feather')
+    feature_scaling = dict()
+    for col in trips.columns:
+        if col in feature_sc.feature_names.tolist():
+            feature_scaling[col] = abs(
+                feature_sc[feature_sc.feature_names == col].scaling.values[0])
+        else:
+            feature_scaling[col] = 0.
+    # Other features
+    feature_scaling['popularity'] = 0.5
+    feature_scaling['detour_score'] = 0.5
 
+    return trips, grid_pts_500, gridpts_at_rte_500, feature_scaling
+
+@st.cache(suppress_st_warning=True, allow_output_mutation=True)
 def load_coarse_grid():
-    grid_pts, grid_dict = trip_data.load_gridpts(
-        'road_backbone_coarse', 'grid_rte_ids_coarse'
-    )
-    loc_tree = sklearn.neighbors.KDTree(grid_pts[['lat', 'lon']])
-    return grid_pts, grid_dict, loc_tree
+    st.write('Loading coarse grid!')
+    grid_pts_75 = pd.read_feather(config.MODEL_PATH + 'grid_points_culled_75.feather')
+    grid_pts_75.set_index('grid_id', inplace=True)
 
-@st.cache
+    rtes_at_grid_75 = pd.read_feather(config.MODEL_PATH + 'rtes_at_grid_culled_75.feather')
+    rtes_at_grid_75.set_index('grid_id', inplace=True)
+
+    loc_tree = sklearn.neighbors.KDTree(grid_pts_75[['lat', 'lon']])
+
+    return grid_pts_75, rtes_at_grid_75, loc_tree
+
 def load_presets():
     presets, presets_labels = trip_data.set_presets()
     presets = trip_data.apply_scaling(presets)
+
     return (presets, presets_labels)
 
-@st.cache(allow_output_mutation=True)
 def fit_tree(df, feature_importance):
     LEAF_SIZE = 20
     return sklearn.neighbors.KDTree(df * feature_importance, leaf_size=LEAF_SIZE)
 
+st.write('Got to load some data')
+# Load trip data (fine)
+trips, grid_pts_fine, gridpts_at_rte_fine, fs = load_data()
+feature_scaling = fs.copy()
 
-def calc_dist_point_to_grid(start_lat, start_lon, grid_pts, grid_dict, loc_tree):
-    dists, inds = loc_tree.query(np.array([[start_lat, start_lon]]), k=2000)
-    dists *= mapping.degrees_to_miles_ish(1)
-    rtes_done = set()
-    ds = []
-    for dist_to_point, i in zip(dists.ravel(), inds.ravel()):
-        grid_id = grid_pts.at[i, 'grid_i']
-        rtes_at_point = grid_dict[grid_id].copy()
-        rtes_at_point -= rtes_done
-        ds += [{'dist_to_start': dist_to_point, 'id': rte} for rte in rtes_at_point]
-        rtes_done = rtes_done.union(rtes_at_point)
+# Load coarser grid data for calculating distances
+grid_pts_coarse, rtes_at_grid_coarse, loc_tree = load_coarse_grid()
 
-    return pd.DataFrame(ds)
-
-def cat_distance(x):
-    if x < 1:
-        return 0
-    if x < 2:
-        return 0.5
-    if x < 5:
-        return 3
-    else:
-        return 10
-
-data, grid_pts_fine, rts_gridpts = load_data()
-feature_importance = [1] * data.shape[1]
-tree = fit_tree(data, feature_importance)
-grid_pts, grid_dict, loc_tree = load_coarse_grid()
 
 # Set up ride style choice:
 st.title('It\'s the Catskills!')
@@ -81,112 +80,111 @@ if start_location_yn:
     start_lon = st.sidebar.text_input('Longitude (W):', 74.25)
     start_lon = float(start_lon) * -1 # convert to degrees east
     start_lat = float(start_lat)
-    # st.markdown(float(start_lat))
-    # st.markdown(-float(start_lon))
-    dist_to_point = calc_dist_point_to_grid(start_lat, start_lon,
-                                            grid_pts, grid_dict, loc_tree)
-    data_loc = pd.merge(data, dist_to_point, on='id', how='inner').set_index('id')
-    data_loc = data_loc[data_loc['dist_to_start'] < MAX_DIST_FROM_START]
-    unscaled_dists = data_loc[['dist_to_start']].copy()
-    data_loc['dist_to_start'] = data_loc['dist_to_start'].apply(cat_distance)
-    tree = fit_tree(data_loc, feature_importance + [1])
-presets, presets_labels = load_presets()
+
+    trips_use, unscaled_dists = trip_data.add_distance_to_start_feature(
+        start_lat, start_lon, trips, grid_pts_coarse, rtes_at_grid_coarse, loc_tree, MAX_DIST_FROM_START
+    )
+else:
+    trips_use = trips.copy()
+    start_lat, start_lon = ('', '')
+
+presets, presets_labels  = load_presets()
 self_enter_lab = 'Enter my own'
 option = st.sidebar.selectbox('Pick one:', [self_enter_lab] + presets_labels)
 
 if option == self_enter_lab:
     st.markdown('Please enter your preferred ride parameters in the sidebar, or select one of our preset options.')
-    dist_in = st.sidebar.slider('Distance:', min_value=5., max_value=100., value=20., step=2.5)
-    slope_in = st.sidebar.slider('Average slope:', min_value=1., max_value=10., value=2., step=0.5)
-    speed_in = st.sidebar.slider('Average speed:', min_value=6., max_value=20., value=10., step=2.)
-    breaks_in = st.sidebar.select_slider('Opportunity for breaks:', ['low', 'medium', 'high'], value='medium')
 
-    breaks_dict = {'low': 1.0, 'medium': 0.85, 'high': 0.7}
-    breaks_in = breaks_dict[breaks_in]
+    if st.sidebar.checkbox('Distance?'):
+        v0 = st.sidebar.slider('', min_value=5., max_value=100., value=20., step=5.)
+    else:
+        v0 = 0.
+        feature_scaling['dist'] = 0.
 
-    chosen = pd.DataFrame([[dist_in, slope_in, speed_in, breaks_in]],
+    if st.sidebar.checkbox('Maximum slope?'):
+        v3 = st.sidebar.slider('', min_value=2., max_value=25., step=1.)
+    else:
+        v3 = 0.
+        feature_scaling['max_slope'] = 0.
+
+
+    if st.sidebar.checkbox('Average slope when descending?'):
+        v2 = st.sidebar.slider('', min_value=-9., max_value=-1., step=1., value=-2.)
+    else:
+        v2 = 0.
+        feature_scaling['avg_slope_descending'] = 0.
+
+    if st.sidebar.checkbox('Percentage of ride above 6% slope?'):
+        v6 = st.sidebar.slider('', min_value=0., max_value=8., step=0.5)
+        v6 /= 100
+    else:
+        v6 = 0.
+        feature_scaling['dist_6percent'] = 0.
+
+    if st.sidebar.checkbox('Percentage of ride above 12% slope?'):
+        v8 = st.sidebar.slider('', min_value=0., max_value=4., step=0.5)
+        v8 /= 100
+    else:
+        v8 = 0.
+        feature_scaling['dist_12percent'] = 0.
+
+    if st.sidebar.checkbox('Prefer detour-worthy routes?'):
+        # average detour-worthiness, where that is proportion of ride people go out of their way to get to a location
+        v9 = 0.3
+    else:
+        v9 = 0.
+        feature_scaling['detour_score'] = 0.
+
+    if st.sidebar.checkbox('Prefer popular routes?'):
+        # popularity, average number of rides that go through the points on this ride
+        v10 = 100.
+    else:
+        v10 = 0.
+        feature_scaling['popularity'] = 0.
+
+    chosen = pd.DataFrame([[v0, 0., v2, v3, 0., 0., v6, 0., v8, v9, v10]],
                         columns=presets.columns)
-    chosen
     if chosen.iloc[0].isna().sum():
         st.markdown('Please fill in all fields!')
+    chosen = trip_data.engineer_features(chosen)
     chosen = trip_data.apply_scaling(chosen)
 else:
     ind = presets_labels.index(option)
     chosen = presets.loc[[ind]]
 
+chosen['lab'] = 'Your input'
+chosen.set_index('lab', inplace=True)
+
 if not chosen.iloc[0].isna().sum():
     N_RIDES = 5
+
     if start_location_yn:
-        chosen['dist_to_start'] = 0
-        data_use = data_loc
+        chosen['dist_to_start'] = 0.
+        feature_scaling['dist_to_start'] = 2.
+    # st.write(feature_scaling)
+    feature_sc = [v for v in feature_scaling.values()]
+    tree = fit_tree(trips_use, feature_sc)
+    dists, df_inds = tree.query(chosen * feature_sc, k=5)
+    dists, df_inds = dists.flatten(), df_inds.flatten()
+    neighbour_rte_ids = trips_use.index[df_inds].tolist()
+
+    # Find original values of the returned routes
+    trips_unscaled = trip_data.remove_scaling(trips_use.loc[neighbour_rte_ids])
+    trips_unscaled = trip_data.reverse_engineer_features(trips_unscaled)
+    if start_location_yn:
+        trips_unscaled['dist_to_start'] = unscaled_dists.loc[neighbour_rte_ids]
+        chosen_unscaled = trip_data.remove_scaling(chosen.drop('dist_to_start', axis=1))
+        chosen_unscaled['dist_to_start'] = 0.
     else:
-        data_use = data
-    dist, ind = tree.query(chosen, k=N_RIDES)
+        chosen_unscaled = trip_data.remove_scaling(chosen)
+    st.dataframe(trips_unscaled.append(chosen_unscaled))
 
-    colours = sns.color_palette('husl', N_RIDES)
-    ride_layers = []
-    map_lims = np.array([[90, -90, 180, -180]])
-    d = trip_data.remove_scaling(data_use.iloc[ind[0]])
-    if start_location_yn:
-        d['dist_to_start'] = unscaled_dists.iloc[ind[0]]
-    d
-    for i in range(N_RIDES):
-        ride_id = data_use.index[ind[0, i]]
-        ride_points = grid_pts_fine.loc[rts_gridpts.loc[ride_id].grid_pts][['lat', 'lon']]
-        ride_layers += [
-            pdk.Layer(
-                type="ScatterplotLayer",
-                data=pd.DataFrame({
-                    'name': ['{}'.format(ride_id)] * ride_points.shape[0],
-                    'coordinates': [[row.lon, row.lat] for i, row in ride_points.iterrows()],
-                    'size': [1] * ride_points.shape[0],
-                }),
-                opacity= 1,
-                pickable=True,
-                filled=True,
-                stroked=False,
-                radius_min_pixels=1,
-                get_position="coordinates",
-                get_radius="size",
-                get_fill_color=[int(x * 255) for x in colours[i]],
-            )
-        ]
-        map_lims = np.vstack((map_lims,
-                            np.array([[ride_points.lat.min(),
-                                       ride_points.lat.max(),
-                                       ride_points.lon.min(),
-                                       ride_points.lon.max()]])))
-        # st.markdown('{},{} - {},{}'.format(min_lat, min_lon, max_lat, max_lon))
+    r = trip_data.plot_NN(
+        neighbour_rte_ids, grid_pts_fine, gridpts_at_rte_fine,
+        (start_lat, start_lon, start_location_yn),
+    )
 
-    max_lat, max_lon = tuple(map_lims[:, 1:4:2].max(axis=0))
-    min_lat, min_lon = tuple(map_lims[:, 0:3:2].min(axis=0))
-
-    if start_location_yn:
-        df = pd.DataFrame({'name': ['start point'], 'size': [2],
-                            'coordinates': [[start_lon, start_lat]]})
-        ride_layers += [pdk.Layer(
-                type="ScatterplotLayer",
-                data=df,
-                opacity= 1,
-                filled=True,
-                stroked=False,
-                radius_min_pixels=3,
-                get_position="coordinates",
-                get_radius="size",
-                get_fill_color=[255, 0, 0],
-        )]
-
-    st.pydeck_chart(pdk.Deck(
-        map_style="mapbox://styles/mapbox/light-v10",
-        initial_view_state=pdk.data_utils.compute_view([
-            [max_lon + 0.25, max_lat + 0.25],
-            [max_lon + 0.25, min_lat - 0.25],
-            [min_lon - 0.25, max_lat + 0.25],
-            [min_lon - 0.25, min_lat - 0.25],
-        ]),
-        layers=ride_layers,
-        tooltip={"html": "<b>Ride {name}</b>", "style": {"color": "white"}},
-    ))
+    st.pydeck_chart(r)
 else:
     st.pydeck_chart(pdk.Deck(
         map_style="mapbox://styles/mapbox/light-v9",

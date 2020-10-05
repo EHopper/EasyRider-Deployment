@@ -40,10 +40,10 @@ def load_data():
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
 def load_coarse_grid():
     st.write('Loading coarse grid!')
-    grid_pts_75 = pd.read_feather(config.MODEL_PATH + 'grid_points_culled_75.feather')
+    grid_pts_75 = pd.read_feather(config.MODEL_PATH + 'grid_points_75.feather')
     grid_pts_75.set_index('grid_id', inplace=True)
 
-    rtes_at_grid_75 = pd.read_feather(config.MODEL_PATH + 'rtes_at_grid_culled_75.feather')
+    rtes_at_grid_75 = pd.read_feather(config.MODEL_PATH + 'rtes_at_grid_75.feather')
     rtes_at_grid_75.set_index('grid_id', inplace=True)
 
     loc_tree = sklearn.neighbors.KDTree(grid_pts_75[['lat', 'lon']])
@@ -177,7 +177,7 @@ if not chosen.iloc[0].isna().sum():
         chosen_unscaled['dist_to_start'] = 0.
     else:
         chosen_unscaled = trip_data.remove_scaling(chosen)
-    st.dataframe(trips_unscaled.append(chosen_unscaled))
+    # st.dataframe(trips_unscaled.append(chosen_unscaled))
 
     r = trip_data.plot_NN(
         neighbour_rte_ids, grid_pts_fine, gridpts_at_rte_fine,
